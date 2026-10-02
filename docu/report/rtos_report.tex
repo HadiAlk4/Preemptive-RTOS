@@ -1,6 +1,5 @@
 \documentclass[conference,a4paper]{IEEEtran}
 
-\usepackage{cite}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{array}
@@ -8,11 +7,11 @@
 
 \begin{document}
 
-\title{Testing a Preemptive RTOS\\on the Raspberry Pi Pico}
+\title{RTOS on the Raspberry PI Pico}
 
 \author{
 \IEEEauthorblockN{Hadi}
-\IEEEauthorblockA{\textit{3302ENG Computer Systems}\\
+\IEEEauthorblockA{\textit{Advanced Computer Systems 7507ENG}\\
 RTOS Laboratory Project\\
 October 2026}
 }
@@ -20,7 +19,7 @@ October 2026}
 \maketitle
 
 \begin{abstract}
-This report is about a small real-time operating system on a Raspberry Pi Pico. Several tasks share one processor. They show their work on an eight-digit seven-segment display and on a serial shell. The scheduler is preemptive round robin with three priority levels. A high task runs for 1 second, a medium task for 0.5 seconds, and a low task for 0.2 seconds. Those times are long enough to tell apart by eye. The shell is medium priority, so a high task started from it cuts in and a low task waits. We checked the board by watching the display and the shell, and by leaving it running for at least five minutes. The report also explains a fault in \texttt{remove\_Task}. After the start-up task removed itself, the display froze on HELLO and the shell never started. The running task record had been pointed at the shell too early, so the shell's saved start state was overwritten.
+This report is about a small real-time operating system on a Raspberry Pi Pico. Several tasks share one processor. They show their work on an eight-digit seven-segment display and on a serial shell. The first scheduler gave every task the same 100 microsecond turn. We left that version running for at least five minutes. The later scheduler is preemptive, with turns of 1 second, 0.5 seconds, and 0.2 seconds. The shell is medium priority, so a high task cuts in and a low task waits. Tasks at the same priority share equal turns. When a higher task is removed, a lower one runs quicker, because nothing longer is still ahead of it. A task must loop forever. If it returns, the processor follows an empty link register. The report also explains a fault in \texttt{remove\_Task}. After the start-up task removed itself, the display froze on HELLO and the shell never started.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -31,21 +30,44 @@ RTOS, preemptive scheduling, round robin, Raspberry Pi Pico, testing
 
 The laboratory asks for a small operating system on a Raspberry Pi Pico. One processor has to share its time across several tasks. Each task is a function that loops and does not return. The tasks use the on-board LED, an eight-digit seven-segment display, and a USB serial shell.
 
-The display board is wired to the Pico over SPI. Power and ground use the Pico supply pins. Chip select, clock, and data use pins 22, 24, and 25 \cite{lab}. A supplied hardware layer, running on the second core, copies an eight-byte buffer onto the glass. Our tasks only write that buffer. Byte 0 is the left digit.
+The display board is wired to the Pico over SPI. Power and ground use the Pico supply pins. Chip select, clock, and data use pins 22, 24, and 25. A supplied hardware layer, running on the second core, copies an eight-byte buffer onto the display. Our tasks only write that buffer. Byte 0 is the left digit.
 
-The first scheduler gave every task the same short turn. This is round robin \cite{notes}. The second part of the laboratory asks for preemption from the scheduler, not from a new outside interrupt \cite{lab}. A more important new task should be able to start at once. The save and load of the processor registers are supplied. Our code chooses which task runs next.
+The work was done in two steps. The first scheduler gave every task the same short turn. This is round robin. We left that version running for at least five minutes. The second part asks for preemption from the scheduler, not from a new outside interrupt. A more important new task should be able to start at once. The save and load of the processor registers are supplied. Our code chooses which task runs next.
 
-This report explains why the scheduler is built this way, how we checked it, and what went wrong when the start-up task removed itself.
+This report explains both schedulers, why a task must never return, how we checked them, and what went wrong when the start-up task removed itself.
 
-\section{Why the Scheduler Works This Way}
+\section{The First Scheduler}
+
+The first RTOS was non-preemptive round robin. Every running task had the same turn. The priority number was saved on the task record, and the switch never read it.
+
+The Pico clock is 125~MHz. \texttt{configure\_Systick(1)} sets the reload value to \(1 \times 125 - 1\), so SysTick fires every 1 microsecond. The handler adds one to \texttt{Ticks}. In this first version it asked for a context switch whenever \texttt{Ticks} reached a multiple of 100. That is one turn every 100 microseconds, and the length was the same for every task.
+
+\texttt{scheduler} did one job. It moved \texttt{CurrentTCB} to the next task in the linked list. If that pointer was empty, it went back to the first task, \texttt{Task\_List}. \texttt{add\_Task} put the new task at the end of the list and then returned. It did not ask for a switch. A new task waited until the current 100 microsecond turn ended.
+
+No task could hold the processor, and no task could jump the queue. On the display, several digits move as if they are all running together. One hundred microseconds is too short to see a single turn. This version was meant to keep many tasks alive, not to show which one was more important.
+
+\subsection{The Five Minute Run}
+\label{sec:testwait}
+
+A short look can miss a fault that shows up later. After the shell was up we started several display tasks at once, on different digits, and left the Pico running for at least five minutes. This was the check of the equal-turn scheduler.
+
+We watched three things. The digits must keep changing. The pattern must not freeze on HELLO or on one number. The shell must still answer. We pressed Enter, ran \texttt{pt}, and checked that the same tasks were still listed. At the end of the five minutes the digits were still moving and the shell still answered. The task list, the tick, and the display path stay alive when every task has the same short turn.
+
+\section{Why a Task Never Returns}
+
+A task is a function, and it must not finish. The laboratory asks for an endless loop so the function never returns. \texttt{count}, \texttt{flash}, \texttt{hexer}, \texttt{splat}, and the shell are all \texttt{while (1)} loops. \texttt{blink} flashes the LED the requested number of times, turns the LED off, and then sits in \texttt{while (1)}. The job can end. The function cannot.
+
+\texttt{add\_Task} builds a fake saved stack, because a new task has never been switched out and has nothing real to restore. The program counter is the task function. The link register is left empty. On this stack that address is 0. Starting the task is like returning into the function. If the function then returns for real, the processor follows that empty link register and jumps to address 0.
+
+The scheduler would still find the task. Ending the function does not take it off the list. Only \texttt{rt}, or \texttt{initd} removing itself, does that. The next turn would try to resume a function that has already returned. The board can hang. The loop keeps the processor inside the task until someone removes it, or until reset.
+
+The shell has a second reason to loop. If it returned, the prompt would be gone, and there would be no way to start or stop the other tasks. \texttt{initd} uses the same rule after it removes itself. It must spin until the next tick. Returning there would also follow the empty link register. That path is in Section~\ref{sec:remove}.
+
+\section{Why the Later Scheduler Works This Way}
 
 \subsection{Preemption}
 
-The system tick comes from SysTick. The Pico clock is 125~MHz \cite{rp2040}. \texttt{configure\_Systick(1)} sets the reload value to \(1 \times 125 - 1\), so the tick is 1 microsecond. The tick handler counts a global \texttt{Ticks} value and also counts down the running task.
-
-In the first version, every task gave up the processor after the same count. That count was 100 ticks, which is 100 microseconds. The scheduler then stepped to the next task in a linked list. At the end of the list it went back to the start. No new task could cut in early.
-
-A more important task should not have to wait out someone else's whole turn. We kept the same tick, and we gave each task its own limit. The task record holds \texttt{quantum} and \texttt{ticks\_left}. Each tick subtracts one from \texttt{ticks\_left}. At zero, the handler refills the limit and asks for a context switch. The scheduler still walks the list in order for that kind of switch.
+The tick is still 1 microsecond. A more important task should not have to wait out someone else's whole turn, so each task now has its own limit. The task record holds \texttt{quantum} and \texttt{ticks\_left}. Each tick subtracts one from \texttt{ticks\_left}. At zero, the handler refills the limit and asks for a context switch. The scheduler still walks the list in order for that kind of switch.
 
 The cut-in is separate, and it happens when a task is added. If the new priority number is higher than the running task, \texttt{add\_Task} stores the new task in \texttt{PreemptTarget} and asks for a switch. On that switch the scheduler runs \texttt{PreemptTarget} first and then clears it. A new task with the same priority, or a lower one, is only linked onto the list. It waits.
 
@@ -53,7 +75,7 @@ The shell is started at medium priority. A high task typed at the shell cuts in.
 
 \subsection{Why Three Levels}
 
-The laboratory leaves the meaning of the priority number to us \cite{lab}. We used three levels. A normal operating system groups work into a few bands, such as high, medium, and low. We used the numbers 3, 2, and 1 for those bands. Table~\ref{tab:levels} lists them.
+The laboratory leaves the meaning of the priority number to us. We used three levels. A normal operating system groups work into a few bands, such as high, medium, and low. We used the numbers 3, 2, and 1 for those bands. Table~\ref{tab:levels} lists them.
 
 \begin{center}
 \captionof{table}{The three priority levels}
@@ -75,79 +97,49 @@ With three fixed bands, the user tasks we care about are only low, medium, and h
 
 \subsection{Why the Shell Is Medium}
 
-The shell is started at priority 2. That is the medium band, so its turn is 0.5 seconds. It has to stay on that band for the preemptive part to work.
+The shell used to be priority 99. That was fine in the first scheduler. The switch never read the priority, so every task got the same 100 microsecond turn. The number 99 did nothing.
 
-New tasks are created from the shell. When Enter is pressed, the running task is \texttt{cmdShell}. A new task cuts in only when its priority number is higher than the task that is running. The shell's number is therefore the line the new task has to cross.
+Only 1, 2, and 3 are real levels. Any other number, including 99, is given the low time of 0.2 seconds. A bigger number does not get a longer turn. Once the scheduler uses priority, 99 is not its own level. The shell would fall through to the low time.
 
-The shell used to be priority 99, the same number \texttt{main} uses for \texttt{initd}. A high task is priority 3. Three is not higher than 99, so \texttt{add\_Task} would only link the new task onto the list. The same thing happens if the shell itself is high. Three is not higher than three. In both cases \texttt{PreemptTarget} stays empty. Every task typed at the prompt, including a high one, waits for the shell's turn to end. During normal use the cut-in path never runs, because the shell is the only place tasks are added.
+The shell is medium, priority 2. A high task is above it, so that task starts at once. A low task is below it, so that task waits. We can see both on the display.
 
-A low shell has the opposite problem. Medium and high are both higher than 1, so both cut in. Typing at the prompt can no longer show a task that waits. The shell would also take the short 0.2 second turn, so a high display task would keep the processor for a full second between chances to read the next key.
+It cannot be high. High is priority 3, the top real level. A new task cuts in only when its number is higher than the shell. Nothing we type is higher than 3, so a high task would wait too. No task would jump in.
 
-Medium is the band that leaves both results in place. A high task is above the shell, so its digit starts at once, while the shell still has time left. A low task is below the shell, so it waits until the 0.5 second turn ends. Another medium task is equal to the shell, so it does not cut in. It joins the list and shares later turns. The prompt stays in the middle: long enough to type a line, and short enough that the display tasks still get time.
-
-This also keeps boot in the right order. \texttt{initd} runs at priority 99. The shell is 2, so adding the shell does not cut \texttt{initd} off. \texttt{initd} can still remove itself and wait for the next tick. That is the path in Section~\ref{sec:remove}. If the shell were above 99, the switch would jump to the shell before \texttt{remove\_Task} ran.
+It cannot be low. Low is priority 1. Medium and high are both above that, so both would jump in at once. We would never see a task wait.
 
 \subsection{Why 1 Second, 0.5 Seconds, and 0.2 Seconds}
 
 The three limits are 1000000, 500000, and 200000 ticks. At 1 microsecond per tick, that is 1 second, 0.5 seconds, and 0.2 seconds.
 
-We first used 100, 50, and 20 ticks. The ratio is the same, but those turns last 100 microseconds, 50 microseconds, and 20 microseconds. The display tasks step a digit every 0.25 seconds or slower. A turn that short is over before the eye can see who had the processor. The glass looks as if every task is moving at once, so the levels cannot be told apart.
+We first used 100, 50, and 20 ticks. The ratio is the same, but those turns last 100 microseconds, 50 microseconds, and 20 microseconds. The display tasks step a digit every 0.25 seconds or slower. A turn that short is over before the eye can see who had the processor. The display looks as if every task is moving at once, so the levels cannot be told apart.
 
 We kept the same ratio and stretched it until a person can watch it. One second, half a second, and 0.2 seconds are far enough apart. A high task holds a digit for about a second. A low task gets a short burst of about 0.2 seconds. These times are for the test. A finished product would use much shorter turns. Here the goal was to see the schedule on the screen.
 
-\section{How We Tested}
+\section{Testing the Preemptive Scheduler}
 
-\subsection{What We Watched}
 
-We watched the USB serial shell and the seven-segment display. The shell prints \texttt{shell \#} and reads a line when Enter is pressed. The commands we used are listed below.
+We started the display tasks and left them running on the display, then changed priorities and removed tasks.
 
-\begin{itemize}
-\item \texttt{pt} prints each task id, name, and priority.
-\item \texttt{rt} followed by an id removes that task.
-\item \texttt{sd} clears the display and stops the system.
-\item \texttt{count 0 3} starts the counter at digit 0 with high priority.
-\item \texttt{flash 2 1} flashes digit 2 with low priority.
-\end{itemize}
+\subsection{Tasks at the Same Priority}
 
-The first number after the name is the task argument. The second number is the priority. \texttt{blink} takes a flash count. \texttt{count} takes the first digit of a pair. \texttt{flash}, \texttt{hexer}, and \texttt{splat} take one digit from 0 to 7.
+Two tasks with the same priority number do not cut in on each other. The new one is not higher than the one already running, so it joins the list and waits. Both get a turn of the same length. Two high tasks each hold the processor for about a second. Two low tasks each get the short burst of about 0.2 seconds.
 
-HELLO uses the left five digits. \texttt{count} uses two digits. \texttt{flash}, \texttt{hexer}, and \texttt{splat} each use one. \texttt{blink} uses the LED on the Pico, on for 2 seconds and off for 2 seconds. Those delays only move forward while that task has the processor.
+On the screen the two digits take turns and move at the same kind of pace. One does not race ahead of the other. The steps inside \texttt{count}, \texttt{flash}, \texttt{hexer}, and \texttt{splat} are themselves a large fraction of a second, so those equal turns are easy to see.
 
-\subsection{Start-up and Each Task}
+\subsection{What Happens After a Higher Task Is Removed}
 
-After reset we waited until the USB serial link was up. The Pico prints \texttt{Starting RTOS Kernel}, then \texttt{Starting HAL}. The left of the display shows HELLO. The shell then prints \texttt{shell \#}. The command \texttt{pt} lists \texttt{cmdShell} only. \texttt{initd} has already removed itself.
+We also ran a higher task and a lower task on different digits at the same time. The higher digit kept updating for its longer turn. The lower digit updated in a shorter burst, then waited while the higher task and the shell took their turns.
 
-We started each task from the shell and checked it against the laboratory script \cite{lab}.
+We then removed the higher task with \texttt{rt} and watched the digit that was left. The lower task moved on, and it ran quicker. Its turn came around sooner, because the long turn that had been in front of it was gone. With no higher task still ahead of it, the lower task took that place. The scheduler kept coming back to it, and its digit stepped more often than it had while the higher task was still in the list.
 
-\begin{itemize}
-\item \texttt{blink} flashes the LED the requested number of times, then leaves it off.
-\item \texttt{count} shows 00 to 99 and repeats. It steps after 0.5 seconds of its own running time.
-\item \texttt{flash} blinks the decimal point, on for 0.25 seconds and off for 0.25 seconds.
-\item \texttt{hexer} walks one digit from F down to 0 and back up to F, one step per second.
-\item \texttt{splat} turns segments on one by one, then off in reverse, one step every 0.25 seconds.
-\end{itemize}
-
-\subsection{The Five Minute Run}
-\label{sec:testwait}
-
-A short look can miss a fault that shows up later. After the shell was up we started several display tasks at once, on different digits, and left the Pico running for at least five minutes.
-
-We watched three things. The digits must keep changing. The pattern must not freeze on HELLO or on one number. The shell must still answer. We pressed Enter, ran \texttt{pt}, and checked that the same tasks were still listed. At the end of the five minutes the digits were still moving and the shell still answered. That was our check that the task list, the tick, and the display path stay alive together.
-
-\subsection{Telling the Three Times Apart}
-
-We ran the same kind of display task at different priorities so the time difference was easy to see.
-
-A high task and a low task were placed on different digits. The high digit keeps updating for about a second at a time. The low digit updates in a shorter burst, about 0.2 seconds, and then waits while the other tasks take their turns. A medium task sits between those two. The steps inside \texttt{count}, \texttt{flash}, \texttt{hexer}, and \texttt{splat} are themselves a large fraction of a second, so the pause between bursts is visible.
-
-We also checked the cut-in from the shell. The shell is medium. Starting a high task makes that task's digit move at once, while the shell still has time left in its turn. Starting a low task does not cut the shell off. The low digit starts to move after the current turn ends. That is the difference between cutting in now and waiting in the list.
+The priority number on the lower task did not change. It looked like the higher one because the list was shorter and nothing with a longer turn was left in front of it.
 
 \section{The Fault When initd Removed Itself}
 \label{sec:remove}
 
 \subsection{What We Saw}
 
-The laboratory says the first task, \texttt{initd}, must start the hardware layer, write HELLO, start the shell, and then remove itself \cite{lab}. We added that last step:
+The laboratory says the first task, \texttt{initd}, must start the hardware layer, write HELLO, start the shell, and then remove itself. We added that last step:
 
 \noindent\begin{minipage}{\columnwidth}
 \begin{verbatim}
@@ -165,68 +157,43 @@ We commented out the two lines that read the current id and call \texttt{remove\
 
 \subsection{Why It Happened}
 
-A context switch always does the same four steps. The tick, or a cut-in request, asks for a switch. The supplied code saves the live registers onto the stack of whoever \texttt{CurrentTCB} points at. It then calls \texttt{scheduler}, which sets \texttt{CurrentTCB} to the next task. It then loads that task's registers.
+\texttt{remove\_Task} only takes the task off the list. It does not switch. The processor stays inside \texttt{initd} until the next tick, and that task's stack lives inside its own record. \texttt{CurrentTCB} has to keep naming \texttt{initd} until the save has finished.
 
-\texttt{remove\_Task} is not a switch. It only edits the linked list. The processor stays inside the caller until the next tick. Each task's stack lives inside its own task record. \texttt{CurrentTCB} has to keep naming the task that is really running until the save has finished. If it names another task first, the save writes the live registers over that other task's stack.
+The old code unlinked \texttt{initd}, then pointed \texttt{CurrentTCB} at \texttt{cmdShell} while \texttt{initd} was still running. The next save wrote \texttt{initd}'s registers over the shell's new stack and wiped the frame that was supposed to start the shell. The shell never started. HELLO stayed on the display because the other core keeps drawing it.
 
-The old function did unlink the node, and it did not free the running record. After the unlink it did one extra thing. If the removed task was the running task, it set \texttt{CurrentTCB} to the next task. The idea was to keep the scheduler off a dead node. That fights the switch, because the switch saves first and calls the scheduler second.
+The function did not move \texttt{CurrentTCB}, but it always freed the record. That frees the stack the processor is still using. Freeing is safe when the shell removes some other task. It is not safe when \texttt{initd} removes itself.
 
-Just before the call, the list was \texttt{initd}, then \texttt{cmdShell}, and \texttt{initd} was running. \texttt{initd} is the head of the list, so the unlink leaves \texttt{cmdShell} as the only task in the list. \texttt{CurrentTCB} still pointed at \texttt{initd}, which was right. The extra lines then pointed \texttt{CurrentTCB} at \texttt{cmdShell} while the processor was still inside \texttt{initd}.
+\subsection{The Fix}
 
-On the next tick the save wrote \texttt{initd}'s registers over the shell's new stack. That stack held the dummy frame from \texttt{add\_Task}, with the program counter set to \texttt{cmdShell}. The frame was destroyed. The scheduler loaded the damaged stack. The shell never started. The hardware layer on the other core kept copying the display buffer, so HELLO stayed on the glass.
+We made this change on the non-preemptive scheduler, before preemption was added. We left \texttt{CurrentTCB} alone. We free the record only when it is not the task that is running. The running task stays allocated until reset. A missing id still returns 0.
 
-The recovered stock \texttt{remove\_Task} has a different fault on this same path. It never moves \texttt{CurrentTCB}, which is the right idea, but it always calls \texttt{free} on the task record. The stack is inside that record. Freeing the running task frees the memory the processor is still using. The next tick then saves onto memory the heap may already have reused. The shell can fail to start, or the board can hang, depending on what the heap does next.
+\noindent\begin{minipage}{\columnwidth}
+\begin{verbatim}
+if (prev == NULL)
+    Task_List = curr->next;
+else
+    prev->next = curr->next;
 
-The stock code was safe for one case only. The shell command \texttt{rt} removes some other task. The processor is not running on that task's stack, so \texttt{free} is safe. The template \texttt{initd} never removed itself. It looped forever. The laboratory does require the self-remove, so the stock function cannot be used as it stands. A missing id in the stock function also returns $-1$. The script asks for 0 \cite{lab}.
+int is_current = (CurrentTCB == curr);
+ENABLE_INT();
 
-\subsection{The Fix and the Retest}
+if (!is_current)
+    free(curr);
 
-The fix keeps the safe part of each version. It unlinks the id. It does not change \texttt{CurrentTCB}. It calls \texttt{free} only when the removed task is not the running task. The running task is left allocated on purpose. That one record stays until reset. \texttt{rt} of any other task still frees its record. A missing id returns 0.
-
-The shell is medium, and \texttt{initd} was started with priority 99, so the shell does not cut in by preemption. \texttt{initd} has to leave the list and wait in \texttt{while (1)} for the tick. Returning from \texttt{initd} would be wrong as well. The dummy link register is empty. The task has to spin until the switch.
-
-After the fix, the list is \texttt{cmdShell} only, and \texttt{CurrentTCB} still points at \texttt{initd}. The save uses \texttt{initd}'s stack, which was not freed. The scheduler follows \texttt{initd}'s old next pointer to the shell. The shell's dummy frame is still intact, so the shell starts. \texttt{pt} does not list \texttt{initd}, because \texttt{initd} is no longer on the list.
-
-Table~\ref{tab:fix} is the retest. We then left the display tasks running for at least five minutes, as in Section~\ref{sec:testwait}. The shell stayed up and the digits kept moving.
-
-\begin{center}
-\captionof{table}{Checks after the \texttt{remove\_Task} fix}
-\label{tab:fix}
-\small
-\begin{tabular}{p{0.30\columnwidth} p{0.58\columnwidth}}
-\toprule
-Check & What we saw \\
-\midrule
-Boot display & HELLO on the left five digits \\
-Serial & \texttt{Starting HAL}, then \texttt{shell \#} \\
-\texttt{pt} & \texttt{cmdShell} only \\
-New tasks & \texttt{count} and \texttt{flash} draw over HELLO \\
-Long run & Still running after five minutes \\
-\bottomrule
-\end{tabular}
-\end{center}
+return (int)Task_ID;
+\end{verbatim}
+\end{minipage}
 
 \section{Conclusion}
 
-The Pico runs a preemptive round-robin scheduler with three priority levels. High, medium, and low get 1 second, 0.5 seconds, and 0.2 seconds. We used three bands because that is closer to a normal operating system than letting the run time follow the priority number. We used these three times so the difference is visible on the display. The shell is medium on purpose. Tasks are added from the shell, and a new task cuts in only when it is higher than the shell. High can cut in. Low has to wait. The test was to watch the glass and the shell, to start the tasks at low and high priority, and to leave the board on for at least five minutes.
+The first scheduler gave every task the same 100 microsecond turn and ignored priority. We left that version on for at least five minutes. The digits kept moving and the shell still answered. Every task loops forever, because a return would follow the empty link register planted when the task was created.
 
-A fault in \texttt{remove\_Task} had pointed \texttt{CurrentTCB} at the shell while \texttt{initd} was still running. The next save overwrote the shell's start frame, HELLO froze, and the shell never printed. Leaving \texttt{CurrentTCB} alone, and not freeing the running task, fixes that path. After the fix, HELLO appears, the shell starts, \texttt{initd} is gone from the list, and the display tasks keep running through the five minute check.
+The later scheduler uses three bands. High, medium, and low get 1 second, 0.5 seconds, and 0.2 seconds. The shell is medium, so a high task cuts in and a low task waits. Tasks at the same priority share equal turns. After the higher task is removed, the lower one runs quicker and takes that place, because nothing longer is still ahead of it.
+
+A fault in \texttt{remove\_Task} had pointed \texttt{CurrentTCB} at the shell while \texttt{initd} was still running. The next save overwrote the shell's start frame, HELLO froze, and the shell never printed. Leaving \texttt{CurrentTCB} alone, and not freeing the running task, fixes that path. After the fix, HELLO appears, the shell starts, and \texttt{initd} is gone from the list.
 
 \section*{Acknowledgment}
 
 The context switch, the display hardware layer, and the helpers \texttt{readln} and \texttt{delay} came with the laboratory template. The scheduler, the task list, the tick handler, the shell, and the five tasks are our code.
-
-\begin{thebibliography}{3}
-
-\bibitem{lab}
-3302ENG Computer Systems, ``Project 2: RTOS project,'' laboratory script, Module~2, 2026.
-
-\bibitem{notes}
-3302ENG Computer Systems, ``(3A) RTOS implementation,'' lecture notes, 2026.
-
-\bibitem{rp2040}
-Raspberry Pi Ltd., \textit{RP2040 Datasheet}, system clock and SysTick timer.
-
-\end{thebibliography}
 
 \end{document}
