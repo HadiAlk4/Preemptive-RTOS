@@ -26,10 +26,9 @@
 #define PRIO_MED      2
 #define PRIO_HIGH     3
 
-#define QUANTUM_HIGH  100
-#define QUANTUM_MED    50
-#define QUANTUM_LOW    20
-
+#define QUANTUM_HIGH  1000000   /* 1.0 s */
+#define QUANTUM_MED    500000   /* 0.5 s */
+#define QUANTUM_LOW    200000   /* 0.2 s */
 /*****************************************************************************************/
 /**************************** Task Control Block Structure *******************************/
 /*****************************************************************************************/
