@@ -21,7 +21,7 @@ int add_Task(void (*Task)(int), uint32_t arg, const char *name, uint8_t priority
     TCB_t *tcb = malloc(sizeof(TCB_t));
     if(tcb == NULL)
     {
-        return -1;
+        return -1; 
     }
     memset(tcb, 0, sizeof(TCB_t)); // may contain sm rubbish so zero it
 
@@ -36,7 +36,7 @@ int add_Task(void (*Task)(int), uint32_t arg, const char *name, uint8_t priority
     uint32_t *frame = &tcb->TCB_Stack[STACK_SIZE - 1]; // compiler is treating those type mismatches as errors
 
     frame[0] = 0x01000000; // PSR, Thumb
-    frame[-1] = (uint32_t)Task; // PC -- compiler is treating those type mismatches as errors
+    frame[-1] = (uint32_t)Task; // PC
     frame[-7] = arg; // R0
 
     tcb->Stack_Pointer = &frame[-15];
@@ -50,7 +50,7 @@ int add_Task(void (*Task)(int), uint32_t arg, const char *name, uint8_t priority
 
     if(Task_List == NULL)
     {
-        Task_List = tcb;
+        Task_List = tcb; // becomes the head
     } else
     {
         TCB_t *iterate = Task_List;

@@ -62,7 +62,7 @@ void cmdShell(int dummy) {		// the dummy int is to keep consistent with the othe
         else if(n == 1 && strcmp(command, "sd") == 0)
         {
             for(int i=0;i<8;i++) display_buffer[i]=0; // clear screen
-            printf("bye bye 😿\n");
+            printf("bye bye\n");
             DISABLE_INT(); // stop systick
             while(1) {}
         }

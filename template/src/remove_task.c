@@ -26,7 +26,7 @@ int remove_Task(uint32_t Task_ID)
         return 0;
     }
 
-    if (prev == NULL)
+    if (prev == NULL) // when the task removes itself 
         Task_List = curr->next;
     else
         prev->next = curr->next;
